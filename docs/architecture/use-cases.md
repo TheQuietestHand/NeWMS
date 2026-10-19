@@ -9,9 +9,11 @@
 | ResumeWorkOrder | work_order_id | PAUSED → IN_PROGRESS, bez auto-resume dzieci |
 | CompleteWorkOrder | work_order_id | permission zależne od trybu; dla OPERATIONS wszystkie terminalne i ≥1 ukończona |
 | CancelWorkOrder | work_order_id, reason? | `CANCEL_WORK_ORDER`; kaskada niedokończonych Operation |
-| CreateOperation | work_order_id, name, assignee?, workstation? | rodzic OPERATIONS; terminalny rodzic odrzucany |
+| CreateOperation | work_order_id, operation_number, assignee?, workstation? | rodzic OPERATIONS; terminalny rodzic odrzucany |
 | StartOperation | operation_id | rodzic IN_PROGRESS, dziecko WAITING |
-| PauseOperation | operation_id | IN_PROGRESS → PAUSED |
+| PauseOperation | operation_id | IN_PROGRESS → PAUSED; zamyka wszystkie otwarte interwały Operation |
+| OpenIntervalOnOperation | operation_id, worker_id | rodzic i dziecko IN_PROGRESS; otwiera interwał kolejnego pracownika |
+| CloseIntervalOnOperation | operation_id, worker_id, end_reason | zamyka interwał jednego pracownika; ostatni zamknięty → Operation PAUSED |
 | ResumeOperation | operation_id | rodzic IN_PROGRESS, dziecko PAUSED |
 | CompleteOperation | operation_id | `COMPLETE_WORK`; nie kończy rodzica |
 | CancelOperation | operation_id | `CANCEL_WORK_ORDER` w MVP, do późniejszego przeglądu |

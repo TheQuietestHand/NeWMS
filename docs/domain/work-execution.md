@@ -31,7 +31,7 @@ Nie wprowadzamy w tym modelu `WorkOrderType` ani `order_type_id`. Referencje mog
 
 ## Operation — child entity
 
-`id`, obowiązkowe `work_order_id`, `name`, `status`, opcjonalnie `assigned_worker_id`, `workstation_id`, oraz `created_at`, `started_at?`, `completed_at?`, `completed_by?`.
+`id`, obowiązkowe `work_order_id`, `operation_number`, `status`, opcjonalnie `assigned_worker_id`, `workstation_id`, oraz `created_at`, `started_at?`, `completed_at?`, `completed_by?`.
 
 - Występuje wyłącznie pod rodzicem OPERATIONS.
 - Nie jest osobnym agregatem, nawet jeśli `operations` jest osobną tabelą.
@@ -43,9 +43,15 @@ Nie wprowadzamy w tym modelu `WorkOrderType` ani `order_type_id`. Referencje mog
 
 `id`, `work_order_id`, `operation_id?`, `worker_id`, `started_at`, `ended_at?`, `ended_by?`, `end_reason?`.
 
-`end_reason ∈ {PAUSED, COMPLETED, CANCELLED, MACHINE_BLOCK}`; czas w UTC, ustalany po stronie serwera. W DIRECT `operation_id=NULL`; w OPERATIONS interwał dotyczy konkretnej Operation. Przy zakończeniu przez system `ended_by` może być puste, natomiast powód musi pozostać.
+`end_reason ∈ {PAUSED, WORK_ORDER_PAUSED, OPERATION_PAUSED, WORK_ORDER_COMPLETED, OPERATION_COMPLETED, WORK_ORDER_CANCELLED, OPERATION_CANCELLED, MACHINE_BLOCK}`; komendy działające na całym WorkOrder lub całej Operation mają własne powody z prefiksem `WORK_ORDER_` / `OPERATION_`, aby w historii było widać, na jakim poziomie zatrzymano pracę; `PAUSED` dotyczy przerwy pojedynczego pracownika; czas w UTC, ustalany po stronie serwera. W DIRECT `operation_id=NULL`; w OPERATIONS interwał dotyczy konkretnej Operation. Przy zakończeniu przez system `ended_by` może być puste, natomiast powód musi pozostać.
 
-**Niezmienniki:** najwyżej jeden otwarty WorkInterval na Worker globalnie; najwyżej jeden otwarty interwał na DIRECT WorkOrder; wiele jednoczesnych interwałów na jednej Operation jest dozwolone, jeżeli dotyczą różnych niepracujących gdzie indziej osób. Roboczogodziny = suma odcinków wszystkich osób; czas kalendarzowy ≠ roboczogodziny.
+**Niezmienniki:** najwyżej jeden otwarty WorkInterval na Worker globalnie; najwyżej jeden otwarty interwał na DIRECT WorkOrder; wiele jednoczesnych interwałów na jednej Operation jest dozwolone, jeżeli dotyczą różnych niepracujących gdzie indziej osób. Roboczogodziny = suma odcinków wszystkich osób; czas kalendarzowy ≠ roboczogodziny. Operation w stanie IN_PROGRESS ma co najmniej jeden otwarty WorkInterval.
+
+## Walidacja przejść
+
+Tabele przejść poniżej (DIRECT, Operation) są **zamkniętą listą dozwolonych par (status, komenda)**. Każda para spoza tabeli — nie tylko zmiana stanu terminalnego — kończy się błędem domenowym `InvalidStatusError` z kodem `INVALID_STATUS`, bez żadnej zmiany stanu ani interwałów. Regułę egzekwuje model domenowy, nie API ani use case.
+
+Dozwoloność zależy od **komendy**, nie tylko od statusu docelowego: `StartWorkOrder` i `ResumeWorkOrder` prowadzą do IN_PROGRESS, ale Start jest dozwolony wyłącznie z WAITING, a Resume wyłącznie z PAUSED. Start na PAUSED i Resume na WAITING → `INVALID_STATUS`.
 
 ## DIRECT — przejścia
 
@@ -53,22 +59,22 @@ Nie wprowadzamy w tym modelu `WorkOrderType` ani `order_type_id`. Referencje mog
 |---|---|---|---|
 | WAITING | StartWorkOrder | IN_PROGRESS | otwórz |
 | WAITING | CancelWorkOrder | CANCELLED | brak |
-| IN_PROGRESS | PauseWorkOrder | PAUSED | zamknij: PAUSED |
-| IN_PROGRESS | CompleteWorkOrder | COMPLETED | zamknij: COMPLETED |
-| IN_PROGRESS | CancelWorkOrder | CANCELLED | zamknij: CANCELLED |
+| IN_PROGRESS | PauseWorkOrder | PAUSED | zamknij: WORK_ORDER_PAUSED |
+| IN_PROGRESS | CompleteWorkOrder | COMPLETED | zamknij: WORK_ORDER_COMPLETED |
+| IN_PROGRESS | CancelWorkOrder | CANCELLED | zamknij: WORK_ORDER_CANCELLED |
 | PAUSED | ResumeWorkOrder | IN_PROGRESS | nowy |
 | PAUSED | CancelWorkOrder | CANCELLED | brak otwartego |
 
-COMPLETED i CANCELLED są terminalne: każda próba zmiany cyklu życia → `INVALID_STATUS`. `CompleteWorkOrder` wymaga `COMPLETE_WORK`; kończący manager może nie być wykonawcą — zapisujemy `completed_by`. Przejęcie przez innego pracownika odbywa się po Pause; poprzednie interwały pozostają.
+COMPLETED i CANCELLED są terminalne: każda próba zmiany cyklu życia → `INVALID_STATUS`. `CompleteWorkOrder` wymaga `COMPLETE_WORK`; kończący manager może nie być wykonawcą — zapisujemy `completed_by`. Przejęcie przez innego pracownika odbywa się po Pause; poprzednie interwały pozostają. Zamknięcie jedynego otwartego interwału poza tymi komendami (np. automatycznie na koniec dnia, O-21) przenosi WorkOrder w PAUSED.
 
 ## OPERATIONS — reguły rodzica
 
 1. `StartWorkOrder`: WAITING → IN_PROGRESS, **bez** WorkInterval.
 2. `StartOperation` wymaga rodzica IN_PROGRESS i Operation WAITING.
 3. Stan dziecka **nigdy automatycznie** nie zmienia stanu rodzica.
-4. `PauseWorkOrder`: IN_PROGRESS → PAUSED; aktywne Operation → PAUSED; WAITING i terminalne pozostają bez zmian; zamknij wszystkie otwarte interwały.
+4. `PauseWorkOrder`: IN_PROGRESS → PAUSED; aktywne Operation → PAUSED; WAITING i terminalne pozostają bez zmian; zamknij wszystkie otwarte interwały z `end_reason=WORK_ORDER_PAUSED`.
 5. `ResumeWorkOrder`: PAUSED → IN_PROGRESS; operacje pozostają PAUSED/WAITING, żadnego auto-resume.
-6. `CancelWorkOrder`: wszystkie nieterminalne Operation → CANCELLED, terminalne bez zmian; aktywne interwały zamknij.
+6. `CancelWorkOrder`: wszystkie nieterminalne Operation → CANCELLED, terminalne bez zmian; aktywne interwały zamknij z `end_reason=WORK_ORDER_CANCELLED`.
 7. `CompleteWorkOrder`: tylko rodzic IN_PROGRESS; **wszystkie** Operation terminalne (`COMPLETED|CANCELLED`) i **co najmniej jedna** COMPLETED; jawna komenda z `COMPLETE_OPERATIONS_WORK_ORDER`. Zero operacji nie spełnia warunku.
 
 ## Operation — przejścia
@@ -78,12 +84,16 @@ COMPLETED i CANCELLED są terminalne: każda próba zmiany cyklu życia → `INV
 | WAITING | StartOperation | IN_PROGRESS |
 | WAITING | CancelOperation | CANCELLED |
 | IN_PROGRESS | PauseOperation | PAUSED |
+| IN_PROGRESS | OpenIntervalOnOperation | IN_PROGRESS |
+| IN_PROGRESS | CloseIntervalOnOperation | IN_PROGRESS, a po zamknięciu ostatniego otwartego interwału PAUSED |
 | IN_PROGRESS | CompleteOperation | COMPLETED |
 | IN_PROGRESS | CancelOperation | CANCELLED |
 | PAUSED | ResumeOperation | IN_PROGRESS |
 | PAUSED | CancelOperation | CANCELLED |
 
-COMPLETED/CANCELLED → `INVALID_STATUS` dla zmian cyklu życia. `CompleteOperation` nie działa z WAITING lub PAUSED. Start i Resume otwierają interwał wykonawcy; Resume tworzy **nowy** interwał. Pause, Complete, Cancel zamykają wszystkie aktywne interwały tej Operation, również przy wielu współwykonawcach. `CompleteOperation` wymaga `COMPLETE_WORK`. Start/Resume wymagają IN_PROGRESS u rodzica oraz braku blokady targetu. Kaskady rodzica są wyraźnymi wyjątkami do reguły lokalnych komend.
+COMPLETED/CANCELLED → `INVALID_STATUS` dla zmian cyklu życia. `CompleteOperation` nie działa z WAITING lub PAUSED. Start i Resume otwierają interwał wykonawcy; Resume tworzy **nowy** interwał. Pause, Complete, Cancel zamykają wszystkie aktywne interwały tej Operation, również przy wielu współwykonawcach, odpowiednio z `OPERATION_PAUSED`, `OPERATION_COMPLETED`, `OPERATION_CANCELLED`. `CompleteOperation` wymaga `COMPLETE_WORK`. Start/Resume wymagają IN_PROGRESS u rodzica oraz braku blokady targetu. Kaskady rodzica są wyraźnymi wyjątkami do reguły lokalnych komend.
+
+**Zamknięcie interwału ≠ pauza Operation.** `OpenIntervalOnOperation` otwiera interwał kolejnego pracownika przy Operation IN_PROGRESS (dołączenie współwykonawcy); obowiązują te same warunki co przy Start/Resume: rodzic IN_PROGRESS, brak blokady targetu, pracownik bez innego otwartego interwału. `CloseIntervalOnOperation` zamyka otwarty interwał jednego pracownika z `end_reason` **podanym przez aktora**; pozostali współwykonawcy pracują dalej. Gdy zamknięty zostaje ostatni otwarty interwał, Operation przechodzi w PAUSED — wynika to z niezmiennika „IN_PROGRESS ⇒ co najmniej jeden otwarty interwał”, a nie z pauzy całej Operation. `PauseOperation` pauzuje Operation, więc zamyka **wszystkie** jej otwarte interwały z `end_reason=OPERATION_PAUSED`. W DIRECT nie ma odpowiednika `CloseIntervalOnOperation`: jedyny interwał zamykają Pause, Complete i Cancel.
 
 ## Invariants (WE-INV)
 

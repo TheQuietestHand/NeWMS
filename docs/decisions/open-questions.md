@@ -22,6 +22,9 @@
 | O-16 | Operacyjny wyjątek transportu blokowanej maszyny | Przyszła autoryzowana procedura. |
 | O-17 | `STALLED` | Późniejszy wyliczany wskaźnik, nie ExecutionStatus. |
 | O-18 | Skalowanie i hosting | Nie ustalono SLA, deploymentu produkcyjnego, polityki retencji. |
+| O-19 | Dołączenie kolejnego pracownika do Operation IN_PROGRESS | Ustalono: komenda `OpenIntervalOnOperation`. |
+| O-20 | Kto może wykonać `CloseIntervalOnOperation` dla cudzego interwału | Kierownik może zamknąć interwał innego pracownika (np. niezamknięty przez pracownika); nazwa permission i dopuszczalne wartości `end_reason` nieustalone. |
+| O-21 | Automatyczne zamykanie interwałów na koniec dnia pracy | Planowane, do implementacji później; `ended_by` puste (system). Ustalono: zamknięcie ostatniego otwartego interwału przenosi Operation (OPERATIONS) lub WorkOrder (DIRECT) w PAUSED; rodzic OPERATIONS pozostaje bez zmian. Definicja końca dnia i `end_reason` nieustalone. |
 
 ## Rozbieżność zakresów historycznych
 
