@@ -80,6 +80,8 @@ class Operation:
     started_at: datetime | None = None
     completed_at: datetime | None = None
     completed_by: UUID | None = None
+    cancelled_at: datetime | None = None
+    cancelled_by: UUID | None = None
 
 
 @dataclass(kw_only=True)
@@ -103,6 +105,8 @@ class WorkOrder:
     started_at: datetime | None = None
     completed_at: datetime | None = None
     completed_by: UUID | None = None
+    cancelled_at: datetime | None = None
+    cancelled_by: UUID | None = None
 
     # Dzieci ładowane razem z agregatem; nie są utrwalane jako lista ID w wierszu WorkOrder.
     operations: list[Operation] = field(default_factory=list)
@@ -267,7 +271,7 @@ class WorkOrder:
                 cancelled_at, cancelled_by, IntervalEndReason.WORK_ORDER_CANCELLED
             )
             self.status = ExecutionStatus.CANCELLED
-            self.completed_at = cancelled_at
-            self.completed_by = cancelled_by
+            self.cancelled_at = cancelled_at
+            self.cancelled_by = cancelled_by
         else:
             raise NotImplementedError()

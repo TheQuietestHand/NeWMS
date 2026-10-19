@@ -26,12 +26,13 @@
 | created_by, created_at | autor i czas | historia |
 | started_at | opcjonalny czas | pierwsze rozpoczęcie |
 | completed_at, completed_by | opcjonalne | audyt zakończenia |
+| cancelled_at, cancelled_by | opcjonalne | audyt anulowania; anulowane zlecenie nie ma `completed_*` |
 
 Nie wprowadzamy w tym modelu `WorkOrderType` ani `order_type_id`. Referencje mogą mieć kategorie PICKING, WORK_DIRECT, WORK_OPERATIONS, TRANSPORT; znaczenie i ewentualna redundancja z `execution_mode` pozostają do doprecyzowania.
 
 ## Operation — child entity
 
-`id`, obowiązkowe `work_order_id`, `operation_number`, `status`, opcjonalnie `assigned_worker_id`, `workstation_id`, oraz `created_at`, `started_at?`, `completed_at?`, `completed_by?`.
+`id`, obowiązkowe `work_order_id`, `operation_number`, `status`, opcjonalnie `assigned_worker_id`, `workstation_id`, oraz `created_at`, `started_at?`, `completed_at?`, `completed_by?`, `cancelled_at?`, `cancelled_by?`.
 
 - Występuje wyłącznie pod rodzicem OPERATIONS.
 - Nie jest osobnym agregatem, nawet jeśli `operations` jest osobną tabelą.
