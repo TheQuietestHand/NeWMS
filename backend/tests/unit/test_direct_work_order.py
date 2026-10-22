@@ -1,6 +1,7 @@
 import copy
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -9,10 +10,11 @@ from newms.modules.work_execution.domain.enums import (
     ExecutionMode,
     ExecutionStatus,
     IntervalEndReason,
+    OrderReferenceCategory,
     TargetType,
 )
 from newms.modules.work_execution.domain.errors import InvalidStatusError, WorkExecutionError
-from newms.modules.work_execution.domain.models import WorkOrder
+from newms.modules.work_execution.domain.models import OrderReference, RequiredItem, WorkOrder
 
 T0 = datetime(2026, 10, 19, 8, 0, tzinfo=UTC)
 
@@ -101,14 +103,10 @@ FORBIDDEN = [
     if (status, command) not in ALLOWED
 ]
 
-NOT_TERMINAL = [
-    status
-    for status in ExecutionStatus
-    if status not in {ExecutionStatus.COMPLETED, ExecutionStatus.CANCELLED}
-]
+NOT_TERMINAL = [status for status in ExecutionStatus if not status.is_terminal]
 
 
-@pytest.mark.parametrize(("status"), NOT_TERMINAL)
+@pytest.mark.parametrize("status", NOT_TERMINAL)
 def test_cancel_every_non_terminal_status_works(status: ExecutionStatus) -> None:
     wo = direct_work_order_in(status)
     before = copy.deepcopy(wo)
@@ -141,20 +139,18 @@ def test_cancel_every_non_terminal_status_works(status: ExecutionStatus) -> None
 
 def test_at_most_one_open_interval_allowed_in_direct_mode() -> None:
     wo = new_direct_work_order()
-    i = 0
-    assert sum(interval.is_open for interval in wo.intervals) == i
+    pairs = [("start", 1), ("pause", 0), ("resume", 1), ("pause", 0)]
 
-    for command in ("start", "pause", "resume", "pause", "resume"):
+    assert sum(interval.is_open for interval in wo.intervals) == 0
+
+    for command, expected_open in pairs:
         COMMANDS[command](wo)
-        if i == 0:
-            i += 1
-        else:
-            i -= 1
-        assert sum(interval.is_open for interval in wo.intervals) == i
+        assert sum(interval.is_open for interval in wo.intervals) == expected_open
+        assert not wo.operations  # DIRECT nie ma Operation (WE-INV-03)
 
 
 def test_work_order_create_function() -> None:
-    with pytest.raises(WorkExecutionError, match="Numer zlecenia nie może być pusty."):
+    with pytest.raises(WorkExecutionError, match="Numer zlecenia nie może być pusty"):
         WorkOrder.create(
             id=uuid4(),
             order_number=" ",
@@ -163,7 +159,7 @@ def test_work_order_create_function() -> None:
             created_at=T0,
         )
 
-    with pytest.raises(WorkExecutionError, match="target_type i target_id muszą być podane razem."):
+    with pytest.raises(WorkExecutionError, match="target_type i target_id muszą być podane razem"):
         WorkOrder.create(
             id=uuid4(),
             order_number="WO-1",
@@ -173,7 +169,7 @@ def test_work_order_create_function() -> None:
             target_type=TargetType.MACHINE,
         )
 
-    with pytest.raises(WorkExecutionError, match="target_type i target_id muszą być podane razem."):
+    with pytest.raises(WorkExecutionError, match="target_type i target_id muszą być podane razem"):
         WorkOrder.create(
             id=uuid4(),
             order_number="WO-1",
@@ -183,7 +179,23 @@ def test_work_order_create_function() -> None:
             target_id=uuid4(),
         )
 
-    wo = new_direct_work_order()
+    refs_items = [RequiredItem(item_ref="bolt", quantity=Decimal(10))]
+    refs_orders = [OrderReference(category=OrderReferenceCategory.PICKING, order_id=uuid4())]
+    wo = WorkOrder.create(
+        id=uuid4(),
+        order_number="WO-1",
+        execution_mode=ExecutionMode.DIRECT,
+        created_by=uuid4(),
+        created_at=T0,
+        related_orders=refs_orders,
+        required_items=refs_items,
+    )
+
+    refs_orders.append(OrderReference(category=OrderReferenceCategory.TRANSPORT, order_id=uuid4()))
+    refs_items.append(RequiredItem(item_ref="nut", quantity=Decimal(5)))
+
+    assert len(wo.related_orders) == 1  # zmiana listy wejściowej nie zmienia zlecenia
+    assert len(wo.required_items) == 1
     assert wo.status is ExecutionStatus.WAITING
     assert not wo.intervals and wo.started_at is None
 
@@ -201,11 +213,11 @@ def test_execution_mode_immutability() -> None:
     before2 = copy.deepcopy(wo2)
 
     with pytest.raises(AttributeError):
-        wo1.execution_mode = ExecutionMode.OPERATIONS  # type: ignore
+        wo1.execution_mode = ExecutionMode.OPERATIONS  # type: ignore[misc]
     assert wo1 == before1
 
     with pytest.raises(AttributeError):
-        wo2.execution_mode = ExecutionMode.DIRECT  # type: ignore
+        wo2.execution_mode = ExecutionMode.DIRECT  # type: ignore[misc]
     assert wo2 == before2
 
 
@@ -223,7 +235,6 @@ def test_forbidden_command_raises_invalid_status_and_changes_nothing(
     assert wo == before
 
 
-@pytest.mark.xfail(strict=True, raises=NotImplementedError)
 def test_start_operations_work_order() -> None:
     owo = WorkOrder.create(
         id=uuid4(),
@@ -233,3 +244,5 @@ def test_start_operations_work_order() -> None:
         created_at=T0,
     )
     owo.start_work_order(uuid4(), uuid4(), T0)  # NotImplementedError
+    assert owo.status is ExecutionStatus.IN_PROGRESS
+    assert not owo.intervals

@@ -11,6 +11,12 @@ class InvalidStatusError(WorkExecutionError):
 
 
 class InvalidExecutionModeError(WorkExecutionError):
-    """Niedozwolona zmiana trybu wykonania."""
+    """Komenda niedostępna w trybie wykonania zlecenia."""
 
     code = "INVALID_EXECUTION_MODE"
+
+
+class OperationNotFoundError(WorkExecutionError):
+    """Operation o podanym id nie należy do tego zlecenia."""
+
+    code = "NOT_FOUND"
