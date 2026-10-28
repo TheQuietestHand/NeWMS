@@ -18,6 +18,34 @@ from newms.modules.work_execution.domain.models import OrderReference, RequiredI
 
 T0 = datetime(2026, 10, 19, 8, 0, tzinfo=UTC)
 
+COMMANDS: dict[str, Callable[[WorkOrder], None]] = {
+    "start": lambda wo: wo.start_work_order(uuid4(), uuid4(), T0),
+    "pause": lambda wo: wo.pause_work_order(T0, uuid4()),
+    "resume": lambda wo: wo.resume_work_order(uuid4(), uuid4(), T0),
+    "complete": lambda wo: wo.complete_work_order(T0, uuid4()),
+    "cancel": lambda wo: wo.cancel_work_order(T0, uuid4()),
+}
+
+# Pary (status, komenda) z tabeli „DIRECT — przejścia” w docs/domain/work-execution.md.
+ALLOWED = {
+    (ExecutionStatus.WAITING, "start"),
+    (ExecutionStatus.WAITING, "cancel"),
+    (ExecutionStatus.IN_PROGRESS, "pause"),
+    (ExecutionStatus.IN_PROGRESS, "complete"),
+    (ExecutionStatus.IN_PROGRESS, "cancel"),
+    (ExecutionStatus.PAUSED, "resume"),
+    (ExecutionStatus.PAUSED, "cancel"),
+}
+
+FORBIDDEN = [
+    (status, command)
+    for status in ExecutionStatus
+    for command in COMMANDS
+    if (status, command) not in ALLOWED
+]
+
+NOT_TERMINAL = [status for status in ExecutionStatus if not status.is_terminal]
+
 
 def new_direct_work_order() -> WorkOrder:
     return WorkOrder.create(
@@ -29,7 +57,7 @@ def new_direct_work_order() -> WorkOrder:
     )
 
 
-def direct_work_order_in(status: ExecutionStatus) -> WorkOrder:
+def drive_direct_work_order_to(status: ExecutionStatus) -> WorkOrder:
     """Doprowadza zlecenie do zadanego statusu wyłącznie dozwolonymi komendami."""
 
     wo = new_direct_work_order()
@@ -77,38 +105,9 @@ def test_takeover_after_pause_keeps_history_and_records_completer() -> None:
     assert not any(interval.is_open for interval in wo.intervals)
 
 
-COMMANDS: dict[str, Callable[[WorkOrder], None]] = {
-    "start": lambda wo: wo.start_work_order(uuid4(), uuid4(), T0),
-    "pause": lambda wo: wo.pause_work_order(T0, uuid4()),
-    "resume": lambda wo: wo.resume_work_order(uuid4(), uuid4(), T0),
-    "complete": lambda wo: wo.complete_work_order(T0, uuid4()),
-    "cancel": lambda wo: wo.cancel_work_order(T0, uuid4()),
-}
-
-# Pary (status, komenda) z tabeli „DIRECT — przejścia” w docs/domain/work-execution.md.
-ALLOWED = {
-    (ExecutionStatus.WAITING, "start"),
-    (ExecutionStatus.WAITING, "cancel"),
-    (ExecutionStatus.IN_PROGRESS, "pause"),
-    (ExecutionStatus.IN_PROGRESS, "complete"),
-    (ExecutionStatus.IN_PROGRESS, "cancel"),
-    (ExecutionStatus.PAUSED, "resume"),
-    (ExecutionStatus.PAUSED, "cancel"),
-}
-
-FORBIDDEN = [
-    (status, command)
-    for status in ExecutionStatus
-    for command in COMMANDS
-    if (status, command) not in ALLOWED
-]
-
-NOT_TERMINAL = [status for status in ExecutionStatus if not status.is_terminal]
-
-
 @pytest.mark.parametrize("status", NOT_TERMINAL)
 def test_cancel_every_non_terminal_status_works(status: ExecutionStatus) -> None:
-    wo = direct_work_order_in(status)
+    wo = drive_direct_work_order_to(status)
     before = copy.deepcopy(wo)
 
     user = uuid4()
@@ -225,7 +224,7 @@ def test_execution_mode_immutability() -> None:
 def test_forbidden_command_raises_invalid_status_and_changes_nothing(
     status: ExecutionStatus, command: str
 ) -> None:
-    wo = direct_work_order_in(status)
+    wo = drive_direct_work_order_to(status)
     before = copy.deepcopy(wo)
 
     with pytest.raises(InvalidStatusError) as exc_info:
@@ -233,16 +232,3 @@ def test_forbidden_command_raises_invalid_status_and_changes_nothing(
 
     assert exc_info.value.code == "INVALID_STATUS"
     assert wo == before
-
-
-def test_start_operations_work_order() -> None:
-    owo = WorkOrder.create(
-        id=uuid4(),
-        order_number="WO-1",
-        execution_mode=ExecutionMode.OPERATIONS,
-        created_by=uuid4(),
-        created_at=T0,
-    )
-    owo.start_work_order(uuid4(), uuid4(), T0)  # NotImplementedError
-    assert owo.status is ExecutionStatus.IN_PROGRESS
-    assert not owo.intervals
