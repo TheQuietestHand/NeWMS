@@ -175,6 +175,34 @@ class WorkOrder:
 
         return self._execution_mode
 
+    def get_operation(self, operation_id: UUID) -> Operation:
+        """Operation tego zlecenia po id; OperationNotFoundError, jeśli nie należy do zlecenia.
+
+        Zwraca obiekt agregatu — zmiany stanu wyłącznie przez metody WorkOrder (ADR-0002).
+        """
+
+        for operation in self.operations:
+            if operation.id == operation_id:
+                return operation
+        raise OperationNotFoundError(
+            f"Brak Operation {operation_id} w zleceniu {self.order_number}."
+        )
+
+    def open_intervals(self, operation_id: UUID | None = None) -> list[WorkInterval]:
+        """Otwarte interwały całego zlecenia albo, gdy podano operation_id, jednej Operation."""
+
+        return [
+            interval
+            for interval in self.intervals
+            if interval.is_open and (operation_id is None or interval.operation_id == operation_id)
+        ]
+
+    @property
+    def has_open_intervals(self) -> bool:
+        """Czy zlecenie ma jakikolwiek otwarty przedział pracy."""
+
+        return bool(self.open_intervals())
+
     def _assert_can(self, command: _Command) -> None:
         """Walidacja przejścia statusu dla komendy w kontekście zlecenia."""
 
@@ -196,30 +224,6 @@ class WorkOrder:
                 f"WorkOrder {self.order_number}: wymagany status IN_PROGRESS, jest {self.status}"
             )
 
-    def _return_operation(self, operation_id: UUID) -> Operation:
-        """Pobranie operacji po ID; wyjątek, jeśli nie istnieje."""
-
-        for operation in self.operations:
-            if operation.id == operation_id:
-                return operation
-        raise OperationNotFoundError(
-            f"Brak Operation {operation_id} w zleceniu {self.order_number}."
-        )
-
-    def _return_open_intervals(self, operation_id: UUID | None = None) -> list[WorkInterval]:
-        """Otwarte interwały całego zlecenia albo, gdy podano operation_id, jednej Operation."""
-
-        return [
-            interval
-            for interval in self.intervals
-            if interval.is_open and (operation_id is None or interval.operation_id == operation_id)
-        ]
-
-    def _has_open_intervals(self) -> bool:
-        """Sprawdzenie, czy istnieją otwarte przedziały pracy."""
-
-        return bool(self._return_open_intervals())
-
     def _open_interval(
         self,
         interval_id: UUID,
@@ -230,7 +234,7 @@ class WorkOrder:
         """Otwiera interwał pracy."""
 
         # Tylko w obrębie agregatu; globalny WE-INV-04 pilnuje warstwa aplikacji i indeks w DB.
-        if any(interval.worker_id == worker_id for interval in self._return_open_intervals()):
+        if any(interval.worker_id == worker_id for interval in self.open_intervals()):
             raise WorkExecutionError("Pracownik ma już otwarty przedział pracy w tym zleceniu.")
         self.intervals.append(
             WorkInterval(
@@ -262,7 +266,7 @@ class WorkOrder:
         worker_id są wtedy pomijane)."""
 
         self._assert_can("start")
-        if not self._has_open_intervals():
+        if not self.has_open_intervals:
             if self.execution_mode is ExecutionMode.DIRECT:
                 self._open_interval(interval_id, worker_id, started_at)
             self.status = ExecutionStatus.IN_PROGRESS
@@ -280,7 +284,7 @@ class WorkOrder:
 
         self._assert_can("pause")
         self._close_intervals(
-            self._return_open_intervals(), ended_at, ended_by, IntervalEndReason.WORK_ORDER_PAUSED
+            self.open_intervals(), ended_at, ended_by, IntervalEndReason.WORK_ORDER_PAUSED
         )
         for operation in self.operations:
             if operation.status is ExecutionStatus.IN_PROGRESS:
@@ -292,7 +296,7 @@ class WorkOrder:
         PAUSED -> IN_PROGRESS. DIRECT otwiera nowy interwał; OPERATIONS bez auto-resume dzieci."""
 
         self._assert_can("resume")
-        if not self._has_open_intervals():
+        if not self.has_open_intervals:
             if self.execution_mode is ExecutionMode.DIRECT:
                 self._open_interval(interval_id, worker_id, started_at)
             self.status = ExecutionStatus.IN_PROGRESS
@@ -315,7 +319,7 @@ class WorkOrder:
                 raise InvalidStatusError("Wymagana co najmniej jedna ukończona Operation.")
 
         self._close_intervals(
-            self._return_open_intervals(),
+            self.open_intervals(),
             completed_at,
             completed_by,
             IntervalEndReason.WORK_ORDER_COMPLETED,
@@ -330,7 +334,7 @@ class WorkOrder:
 
         self._assert_can("cancel")
         self._close_intervals(
-            self._return_open_intervals(),
+            self.open_intervals(),
             cancelled_at,
             cancelled_by,
             IntervalEndReason.WORK_ORDER_CANCELLED,
@@ -387,7 +391,7 @@ class WorkOrder:
         self._require_mode(ExecutionMode.OPERATIONS)
         self._require_in_progress()
 
-        operation = self._return_operation(operation_id)
+        operation = self.get_operation(operation_id)
         _assert_can(operation.status, "start", f"Operation {operation.operation_number}")
 
         self._open_interval(interval_id, worker_id, started_at, operation.id)
@@ -398,11 +402,11 @@ class WorkOrder:
         """Wstrzymuje aktywną operację. IN_PROGRESS -> PAUSED."""
 
         self._require_mode(ExecutionMode.OPERATIONS)
-        operation = self._return_operation(operation_id)
+        operation = self.get_operation(operation_id)
         _assert_can(operation.status, "pause", f"Operation {operation.operation_number}")
 
         self._close_intervals(
-            self._return_open_intervals(operation_id),
+            self.open_intervals(operation_id),
             ended_at,
             ended_by,
             IntervalEndReason.OPERATION_PAUSED,
@@ -418,7 +422,7 @@ class WorkOrder:
     ) -> None:
         self._require_mode(ExecutionMode.OPERATIONS)
         self._require_in_progress()
-        operation = self._return_operation(operation_id)
+        operation = self.get_operation(operation_id)
         _assert_can(operation.status, "resume", f"Operation {operation.operation_number}")
 
         self._open_interval(interval_id, worker_id, started_at, operation_id)
@@ -431,11 +435,11 @@ class WorkOrder:
         Nie kończy rodzica - CompleteWorkOrder jest zawsze jawną komendą."""
 
         self._require_mode(ExecutionMode.OPERATIONS)
-        operation = self._return_operation(operation_id)
+        operation = self.get_operation(operation_id)
         _assert_can(operation.status, "complete", f"Operation {operation.operation_number}")
 
         self._close_intervals(
-            self._return_open_intervals(operation_id),
+            self.open_intervals(operation_id),
             completed_at,
             completed_by,
             IntervalEndReason.OPERATION_COMPLETED,
@@ -451,10 +455,10 @@ class WorkOrder:
         """Anuluje operację. WAITING/IN_PROGRESS/PAUSED -> CANCELLED."""
 
         self._require_mode(ExecutionMode.OPERATIONS)
-        operation = self._return_operation(operation_id)
+        operation = self.get_operation(operation_id)
         _assert_can(operation.status, "cancel", f"Operation {operation.operation_number}")
         self._close_intervals(
-            self._return_open_intervals(operation.id),
+            self.open_intervals(operation.id),
             cancelled_at,
             cancelled_by,
             IntervalEndReason.OPERATION_CANCELLED,
@@ -475,7 +479,7 @@ class WorkOrder:
 
         self._require_mode(ExecutionMode.OPERATIONS)
         self._require_in_progress()
-        operation = self._return_operation(operation_id)
+        operation = self.get_operation(operation_id)
         if operation.status is not ExecutionStatus.IN_PROGRESS:
             raise InvalidStatusError(
                 f"Operation {operation.operation_number}: wymagany IN_PROGRESS, "
@@ -494,12 +498,12 @@ class WorkOrder:
         """Zamyka interwał jednego pracownika; ostatni zamknięty → Operation PAUSED."""
 
         self._require_mode(ExecutionMode.OPERATIONS)
-        operation = self._return_operation(operation_id)
-        open_intervals = self._return_open_intervals(operation.id)
-        worker_intervals = [i for i in open_intervals if i.worker_id == worker_id]
+        operation = self.get_operation(operation_id)
+        operation_open = self.open_intervals(operation.id)
+        worker_intervals = [i for i in operation_open if i.worker_id == worker_id]
         if not worker_intervals:
             raise WorkExecutionError("Pracownik nie ma otwartego przedziału pracy w tej Operation.")
 
         self._close_intervals(worker_intervals, ended_at, ended_by, reason)
-        if len(worker_intervals) == len(open_intervals):
+        if len(worker_intervals) == len(operation_open):
             operation.status = ExecutionStatus.PAUSED
