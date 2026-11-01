@@ -61,7 +61,7 @@ def new_work_order_with_operations(n: int) -> tuple[WorkOrder, list[Operation]]:
 
     wo = new_operations_work_order()
     operations = [wo.add_operation(uuid4(), f"OP-{i}", T0) for i in range(n)]
-    wo.start_work_order(uuid4(), uuid4(), T0)
+    wo.start_work_order(T0)
     return wo, operations
 
 
@@ -80,7 +80,7 @@ def drive_operations_work_order_to(status: ExecutionStatus) -> WorkOrder:
         return wo
 
     done = wo.add_operation(uuid4(), "OP-DONE", T0) if status is ExecutionStatus.COMPLETED else None
-    wo.start_work_order(uuid4(), uuid4(), T0)
+    wo.start_work_order(T0)
     if status is ExecutionStatus.PAUSED:
         wo.pause_work_order(T0, uuid4())
     elif done is not None:
@@ -124,7 +124,7 @@ def test_start_operation_before_work_order() -> None:
 
 def test_start_operations_work_order_doesnt_start_interval() -> None:
     wo = new_operations_work_order()
-    wo.start_work_order(uuid4(), uuid4(), T0)
+    wo.start_work_order(T0)
 
     assert not wo.intervals
 
@@ -134,7 +134,7 @@ def test_resume_work_order_does_not_resume_operations() -> None:
     drive_operation_to(wo, active.id, ExecutionStatus.IN_PROGRESS)
     wo.pause_work_order(T0, uuid4())
 
-    wo.resume_work_order(uuid4(), uuid4(), T0)
+    wo.resume_work_order(T0)
 
     assert wo.status is ExecutionStatus.IN_PROGRESS
     assert active.status is ExecutionStatus.PAUSED  # bez auto-resume (reguła 5)
@@ -146,7 +146,7 @@ def test_complete_operation_doesnt_change_parent_status() -> None:
     wo = new_operations_work_order()
     op_id = uuid4()
     wo.add_operation(op_id, "OP-1", T0, uuid4(), uuid4())
-    wo.start_work_order(uuid4(), uuid4(), T0)
+    wo.start_work_order(T0)
     before = copy.deepcopy(wo)
 
     drive_operation_to(wo, op_id, ExecutionStatus.COMPLETED)
@@ -198,7 +198,7 @@ def test_cascade_after_work_order_pause() -> None:
     operations = {
         status: wo.add_operation(uuid4(), f"OP-{status}", T0) for status in ExecutionStatus
     }
-    wo.start_work_order(uuid4(), uuid4(), T0)
+    wo.start_work_order(T0)
     for status, operation in operations.items():
         drive_operation_to(wo, operation.id, status)
 
@@ -238,7 +238,7 @@ def test_cascade_after_work_order_cancel() -> None:
     operations = {
         status: wo.add_operation(uuid4(), f"OP-{status}", T0) for status in ExecutionStatus
     }
-    wo.start_work_order(uuid4(), uuid4(), T0)
+    wo.start_work_order(T0)
     for status, operation in operations.items():
         drive_operation_to(wo, operation.id, status)
     cancelled_by = uuid4()
@@ -383,7 +383,7 @@ def test_operation_commands_on_direct_raise_invalid_execution_mode(command: str)
         created_by=uuid4(),
         created_at=T0,
     )
-    wo.start_work_order(uuid4(), uuid4(), T0)
+    wo.start_work_order(T0, interval_id=uuid4(), worker_id=uuid4())
 
     with pytest.raises(InvalidExecutionModeError) as exc_info:
         OP_COMMANDS[command](wo, uuid4())
@@ -436,7 +436,6 @@ def test_add_operation_rejects_blank_number() -> None:
     assert not wo.operations
 
 
-@pytest.mark.xfail(strict=True, reason="decyzja 2: unikalny operation_number, niezaimplementowane")
 def test_add_operation_rejects_duplicate_number() -> None:
     wo = new_operations_work_order()
     wo.add_operation(uuid4(), "OP-1", T0)
@@ -446,7 +445,6 @@ def test_add_operation_rejects_duplicate_number() -> None:
     assert len(wo.operations) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="decyzja 3: _MANUAL_CLOSE_REASONS, niezaimplementowane")
 @pytest.mark.parametrize(
     "reason",
     [r for r in IntervalEndReason if r is not IntervalEndReason.PAUSED],
@@ -459,4 +457,44 @@ def test_close_interval_rejects_reserved_reasons(reason: IntervalEndReason) -> N
 
     with pytest.raises(WorkExecutionError):
         wo.close_interval_on_operation(operation.id, worker, T0, worker, reason)
+    assert wo == before
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"interval_id": uuid4(), "worker_id": uuid4()},
+        {"interval_id": uuid4()},
+        {"worker_id": uuid4()},
+    ],
+    ids=["both", "interval", "worker"],
+)
+@pytest.mark.parametrize("status", [ExecutionStatus.WAITING, ExecutionStatus.PAUSED])
+def test_operations_start_and_resume_reject_interval_args(
+    status: ExecutionStatus, extra: dict[str, UUID]
+) -> None:
+    wo = drive_operations_work_order_to(status)
+    before = copy.deepcopy(wo)
+    command = wo.start_work_order if status is ExecutionStatus.WAITING else wo.resume_work_order
+
+    with pytest.raises(WorkExecutionError, match="nie otwiera interwału"):
+        command(T0, **extra)
+
+    assert wo == before
+
+
+def test_collections_cannot_be_changed_from_outside() -> None:
+    wo = new_operations_work_order()
+    wo.add_operation(uuid4(), "OP-1", T0)
+    before = copy.deepcopy(wo)
+
+    with pytest.raises(AttributeError):
+        wo.operations.clear()  # type: ignore[attr-defined]
+    with pytest.raises(AttributeError):
+        wo.intervals.clear()  # type: ignore[attr-defined]
+    with pytest.raises(AttributeError):
+        wo.operations = ()  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        wo.intervals = ()  # type: ignore[misc]
+
     assert wo == before

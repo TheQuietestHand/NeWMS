@@ -2,7 +2,7 @@ import copy
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -19,9 +19,9 @@ from newms.modules.work_execution.domain.models import OrderReference, RequiredI
 T0 = datetime(2026, 10, 19, 8, 0, tzinfo=UTC)
 
 COMMANDS: dict[str, Callable[[WorkOrder], None]] = {
-    "start": lambda wo: wo.start_work_order(uuid4(), uuid4(), T0),
+    "start": lambda wo: wo.start_work_order(T0, interval_id=uuid4(), worker_id=uuid4()),
     "pause": lambda wo: wo.pause_work_order(T0, uuid4()),
-    "resume": lambda wo: wo.resume_work_order(uuid4(), uuid4(), T0),
+    "resume": lambda wo: wo.resume_work_order(T0, interval_id=uuid4(), worker_id=uuid4()),
     "complete": lambda wo: wo.complete_work_order(T0, uuid4()),
     "cancel": lambda wo: wo.cancel_work_order(T0, uuid4()),
 }
@@ -67,7 +67,7 @@ def drive_direct_work_order_to(status: ExecutionStatus) -> WorkOrder:
         wo.cancel_work_order(T0, uuid4())
         return wo
 
-    wo.start_work_order(uuid4(), uuid4(), T0)
+    wo.start_work_order(T0, interval_id=uuid4(), worker_id=uuid4())
     if status is ExecutionStatus.PAUSED:
         wo.pause_work_order(T0, uuid4())
     elif status is ExecutionStatus.COMPLETED:
@@ -80,9 +80,9 @@ def test_takeover_after_pause_keeps_history_and_records_completer() -> None:
     first_interval, second_interval = uuid4(), uuid4()
     wo = new_direct_work_order()
 
-    wo.start_work_order(first_interval, worker_a, T0)
+    wo.start_work_order(T0, interval_id=first_interval, worker_id=worker_a)
     wo.pause_work_order(T0 + timedelta(hours=1), worker_a)
-    wo.resume_work_order(second_interval, worker_b, T0 + timedelta(hours=2))
+    wo.resume_work_order(T0 + timedelta(hours=2), interval_id=second_interval, worker_id=worker_b)
     wo.complete_work_order(T0 + timedelta(hours=3), manager)
 
     assert wo.status is ExecutionStatus.COMPLETED
@@ -231,4 +231,23 @@ def test_forbidden_command_raises_invalid_status_and_changes_nothing(
         COMMANDS[command](wo)
 
     assert exc_info.value.code == "INVALID_STATUS"
+    assert wo == before
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [{}, {"interval_id": uuid4()}, {"worker_id": uuid4()}],
+    ids=["none", "no-worker", "no-interval"],
+)
+@pytest.mark.parametrize("status", [ExecutionStatus.WAITING, ExecutionStatus.PAUSED])
+def test_direct_start_and_resume_require_interval_args(
+    status: ExecutionStatus, missing: dict[str, UUID]
+) -> None:
+    wo = drive_direct_work_order_to(status)
+    before = copy.deepcopy(wo)
+    command = wo.start_work_order if status is ExecutionStatus.WAITING else wo.resume_work_order
+
+    with pytest.raises(WorkExecutionError, match="wymaga interval_id i worker_id"):
+        command(T0, **missing)
+
     assert wo == before

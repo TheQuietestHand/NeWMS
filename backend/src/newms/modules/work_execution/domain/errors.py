@@ -10,6 +10,12 @@ class InvalidStatusError(WorkExecutionError):
     code = "INVALID_STATUS"
 
 
+class InvalidEndReasonError(WorkExecutionError):
+    """Niedozwolony powód zakończenia interwału pracy."""
+
+    code = "INVALID_END_REASON"
+
+
 class InvalidExecutionModeError(WorkExecutionError):
     """Komenda niedostępna w trybie wykonania zlecenia."""
 

@@ -13,6 +13,7 @@ from newms.modules.work_execution.domain.enums import (
     TargetType,
 )
 from newms.modules.work_execution.domain.errors import (
+    InvalidEndReasonError,
     InvalidExecutionModeError,
     InvalidStatusError,
     OperationNotFoundError,
@@ -32,6 +33,8 @@ _ALLOWED_FROM: dict[_Command, frozenset[ExecutionStatus]] = {
         {ExecutionStatus.WAITING, ExecutionStatus.IN_PROGRESS, ExecutionStatus.PAUSED}
     ),
 }
+
+_MANUAL_CLOSE_REASONS: frozenset[IntervalEndReason] = frozenset({IntervalEndReason.PAUSED})
 
 
 def _assert_can(status: ExecutionStatus, command: _Command, subject: str) -> None:
@@ -121,9 +124,9 @@ class WorkOrder:
     cancelled_by: UUID | None = None
 
     # Dzieci ładowane razem z agregatem; nie są utrwalane jako lista ID w wierszu WorkOrder.
-    operations: list[Operation] = field(default_factory=list)
+    _operations: list[Operation] = field(default_factory=list)
     # Interwały należą do granicy spójności, bo Pause/Cancel rodzica zamyka je atomowo.
-    intervals: list[WorkInterval] = field(default_factory=list)
+    _intervals: list[WorkInterval] = field(default_factory=list)
 
     @classmethod
     def create(
@@ -174,6 +177,18 @@ class WorkOrder:
         """Tryb wykonania zlecenia (DIRECT lub OPERATIONS)."""
 
         return self._execution_mode
+
+    @property
+    def operations(self) -> tuple[Operation, ...]:
+        """Operation zlecenia. Krotka: skład zmienia się tylko przez metody WorkOrder."""
+
+        return tuple(self._operations)
+
+    @property
+    def intervals(self) -> tuple[WorkInterval, ...]:
+        """Interwały zlecenia. Krotka: skład zmienia się tylko przez metody WorkOrder."""
+
+        return tuple(self._intervals)
 
     def get_operation(self, operation_id: UUID) -> Operation:
         """Operation tego zlecenia po id; OperationNotFoundError, jeśli nie należy do zlecenia.
@@ -236,7 +251,7 @@ class WorkOrder:
         # Tylko w obrębie agregatu; globalny WE-INV-04 pilnuje warstwa aplikacji i indeks w DB.
         if any(interval.worker_id == worker_id for interval in self.open_intervals()):
             raise WorkExecutionError("Pracownik ma już otwarty przedział pracy w tym zleceniu.")
-        self.intervals.append(
+        self._intervals.append(
             WorkInterval(
                 id=interval_id,
                 work_order_id=self.id,
@@ -246,6 +261,25 @@ class WorkOrder:
             )
         )
 
+    def _interval_args_for_mode(
+        self, interval_id: UUID | None, worker_id: UUID | None
+    ) -> tuple[UUID, UUID] | None:
+        """Start/Resume rodzica: DIRECT wymaga interval_id i worker_id, OPERATIONS ich zabrania.
+
+        Zwraca argumenty nowego interwału albo None, gdy interwał nie powstaje.
+        """
+
+        if self.execution_mode is ExecutionMode.OPERATIONS:
+            if interval_id is not None or worker_id is not None:
+                raise WorkExecutionError(
+                    "Zlecenie OPERATIONS nie otwiera interwału: "
+                    "interval_id i worker_id nie są dozwolone."
+                )
+            return None
+        if interval_id is None or worker_id is None:
+            raise WorkExecutionError("Zlecenie DIRECT wymaga interval_id i worker_id.")
+        return interval_id, worker_id
+
     @staticmethod
     def _close_intervals(
         intervals: list[WorkInterval],
@@ -253,22 +287,34 @@ class WorkOrder:
         ended_by: UUID | None,
         reason: IntervalEndReason,
     ) -> None:
-        """Zamyka podane interwały pracy."""
+        """Zamyka podane interwały pracy.
+        Data zakończenia interwału nie może być starsza niż data utworzenia."""
+        if any(interval.started_at > ended_at for interval in intervals):
+            raise WorkExecutionError(
+                "Podana data starsza od daty rozpoczęcia w conajmniej jednym interwale"
+            )
 
         for interval in intervals:
             interval.ended_at = ended_at
             interval.ended_by = ended_by
             interval.end_reason = reason
 
-    def start_work_order(self, interval_id: UUID, worker_id: UUID, started_at: datetime) -> None:
+    def start_work_order(
+        self,
+        started_at: datetime,
+        *,
+        interval_id: UUID | None = None,
+        worker_id: UUID | None = None,
+    ) -> None:
         """Rozpoczyna work order.
-        WAITING → IN_PROGRESS. DIRECT otwiera interwał; OPERATIONS nie (interval_id i
-        worker_id są wtedy pomijane)."""
+        WAITING → IN_PROGRESS. DIRECT wymaga interval_id i worker_id i otwiera interwał;
+        OPERATIONS ich nie przyjmuje i startuje bez interwału."""
 
         self._assert_can("start")
+        new_interval = self._interval_args_for_mode(interval_id, worker_id)
         if not self.has_open_intervals:
-            if self.execution_mode is ExecutionMode.DIRECT:
-                self._open_interval(interval_id, worker_id, started_at)
+            if new_interval is not None:
+                self._open_interval(*new_interval, started_at)
             self.status = ExecutionStatus.IN_PROGRESS
             self.started_at = started_at
         else:
@@ -291,14 +337,22 @@ class WorkOrder:
                 operation.status = ExecutionStatus.PAUSED
         self.status = ExecutionStatus.PAUSED
 
-    def resume_work_order(self, interval_id: UUID, worker_id: UUID, started_at: datetime) -> None:
+    def resume_work_order(
+        self,
+        started_at: datetime,
+        *,
+        interval_id: UUID | None = None,
+        worker_id: UUID | None = None,
+    ) -> None:
         """Wznawia work order.
-        PAUSED -> IN_PROGRESS. DIRECT otwiera nowy interwał; OPERATIONS bez auto-resume dzieci."""
+        PAUSED -> IN_PROGRESS. DIRECT wymaga interval_id i worker_id i otwiera nowy interwał;
+        OPERATIONS ich nie przyjmuje i nie wznawia automatycznie dzieci."""
 
         self._assert_can("resume")
+        new_interval = self._interval_args_for_mode(interval_id, worker_id)
         if not self.has_open_intervals:
-            if self.execution_mode is ExecutionMode.DIRECT:
-                self._open_interval(interval_id, worker_id, started_at)
+            if new_interval is not None:
+                self._open_interval(*new_interval, started_at)
             self.status = ExecutionStatus.IN_PROGRESS
         else:
             raise WorkExecutionError(
@@ -364,8 +418,12 @@ class WorkOrder:
             raise InvalidStatusError(
                 f"Operation można dodać tylko do zlecenia WAITING, aktualny status: {self.status}."
             )
+        if any(op.id == operation_id for op in self.operations):
+            raise WorkExecutionError("Numer ID operacji musi być unikalne")
         if not operation_number.strip():
             raise WorkExecutionError("Numer operacji nie może być pusty.")
+        if any(op.operation_number == operation_number for op in self.operations):
+            raise WorkExecutionError("Numer operacji musi być unikalny.")
 
         operation = Operation(
             id=operation_id,
@@ -375,7 +433,7 @@ class WorkOrder:
             workstation_id=workstation_id,
             created_at=created_at,
         )
-        self.operations.append(operation)
+        self._operations.append(operation)
         return operation
 
     def start_operation(
@@ -499,6 +557,13 @@ class WorkOrder:
 
         self._require_mode(ExecutionMode.OPERATIONS)
         operation = self.get_operation(operation_id)
+        if not operation.status == ExecutionStatus.IN_PROGRESS:
+            raise InvalidStatusError(
+                f"Operation {operation.operation_number}: wymagany IN_PROGRESS, "
+                f"obecny status: {operation.status}"
+            )
+        if reason not in _MANUAL_CLOSE_REASONS:
+            raise InvalidEndReasonError(f"Powód zakończenia {reason} niedozwolony.")
         operation_open = self.open_intervals(operation.id)
         worker_intervals = [i for i in operation_open if i.worker_id == worker_id]
         if not worker_intervals:
