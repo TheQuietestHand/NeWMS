@@ -145,7 +145,7 @@ def test_resume_work_order_does_not_resume_operations() -> None:
 def test_complete_operation_doesnt_change_parent_status() -> None:
     wo = new_operations_work_order()
     op_id = uuid4()
-    wo.add_operation(op_id, "OP-1", T0, uuid4(), uuid4())
+    wo.add_operation(op_id, "OP-1", T0, [uuid4()], uuid4())
     wo.start_work_order(T0)
     before = copy.deepcopy(wo)
 
@@ -498,3 +498,65 @@ def test_collections_cannot_be_changed_from_outside() -> None:
         wo.intervals = ()  # type: ignore[misc]
 
     assert wo == before
+
+
+def test_duplicated_operation_id() -> None:
+    wo = new_operations_work_order()
+    id = uuid4()
+    wo.add_operation(id, "OP-1", T0)
+    before = copy.deepcopy(wo)
+
+    with pytest.raises(WorkExecutionError):
+        wo.add_operation(id, "OP-2", T0)
+
+    assert wo == before
+
+
+def test_duplicated_operation_number() -> None:
+    wo = new_operations_work_order()
+    wo.add_operation(uuid4(), "OP-1", T0)
+    before = copy.deepcopy(wo)
+
+    with pytest.raises(WorkExecutionError):
+        wo.add_operation(uuid4(), "OP-1", T0)
+
+    assert wo == before
+
+
+def test_close_interval_on_operation_not_in_progress() -> None:
+    wo = new_operations_work_order()
+    id = uuid4()
+    wo.add_operation(id, "OP-1", T0)
+    wo.start_work_order(T0)
+    drive_operation_to(wo, id, ExecutionStatus.PAUSED)
+    before = copy.deepcopy(wo)
+
+    with pytest.raises(InvalidStatusError):
+        wo.close_interval_on_operation(id, uuid4(), T0, None, IntervalEndReason.PAUSED)
+
+    assert wo == before
+
+
+def test_close_rejects_end_before_start_of_any_co_worker_and_changes_nothing() -> None:
+    wo, [operation] = new_work_order_with_operations(1)
+    wo.start_operation(operation.id, uuid4(), uuid4(), T0)
+    wo.open_interval_on_operation(operation.id, uuid4(), uuid4(), T0 + timedelta(hours=2))
+    before = copy.deepcopy(wo)
+
+    # Czas między startami: pierwszy interwał dałoby się zamknąć, drugi już nie.
+    with pytest.raises(WorkExecutionError, match="starsza od daty rozpoczęcia"):
+        wo.pause_operation(operation.id, T0 + timedelta(hours=1), uuid4())
+
+    assert wo == before
+
+
+def test_add_operation_keeps_own_copy_of_assignees() -> None:
+    wo = new_operations_work_order()
+    worker_a, worker_b = uuid4(), uuid4()
+    assignees = [worker_a, worker_b]
+
+    operation = wo.add_operation(uuid4(), "OP-1", T0, assignees)
+    assignees.clear()
+
+    assert operation.assigned_worker_ids == [worker_a, worker_b]
+    assert wo.add_operation(uuid4(), "OP-2", T0).assigned_worker_ids == []

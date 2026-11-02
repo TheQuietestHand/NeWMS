@@ -32,7 +32,7 @@ Nie wprowadzamy w tym modelu `WorkOrderType` ani `order_type_id`. Referencje mog
 
 ## Operation — child entity
 
-`id`, obowiązkowe `work_order_id`, `operation_number`, `status`, opcjonalnie `assigned_worker_id`, `workstation_id`, oraz `created_at`, `started_at?`, `completed_at?`, `completed_by?`, `cancelled_at?`, `cancelled_by?`.
+`id`, obowiązkowe `work_order_id`, `operation_number`, `status`, lista `assigned_worker_ids` (plan przydziału, może być pusta; kto faktycznie pracował, wynika z `WorkInterval.worker_id`), opcjonalnie `workstation_id`, oraz `created_at`, `started_at?`, `completed_at?`, `completed_by?`, `cancelled_at?`, `cancelled_by?`.
 
 - Występuje wyłącznie pod rodzicem OPERATIONS.
 - Nie jest osobnym agregatem, nawet jeśli `operations` jest osobną tabelą.

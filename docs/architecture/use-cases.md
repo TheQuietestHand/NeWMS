@@ -9,7 +9,7 @@
 | ResumeWorkOrder | work_order_id | PAUSED → IN_PROGRESS, bez auto-resume dzieci |
 | CompleteWorkOrder | work_order_id | permission zależne od trybu; dla OPERATIONS wszystkie terminalne i ≥1 ukończona |
 | CancelWorkOrder | work_order_id, reason? | `CANCEL_WORK_ORDER`; kaskada niedokończonych Operation |
-| CreateOperation | work_order_id, operation_number, assignee?, workstation? | rodzic OPERATIONS; terminalny rodzic odrzucany |
+| CreateOperation | work_order_id, operation_number, assignees[], workstation? | rodzic OPERATIONS; terminalny rodzic odrzucany |
 | StartOperation | operation_id | rodzic IN_PROGRESS, dziecko WAITING |
 | PauseOperation | operation_id | IN_PROGRESS → PAUSED; zamyka wszystkie otwarte interwały Operation |
 | OpenIntervalOnOperation | operation_id, worker_id | rodzic i dziecko IN_PROGRESS; otwiera interwał kolejnego pracownika |
@@ -24,7 +24,7 @@
 
 Use case przyjmuje typowaną komendę, `actor_id`, Unit of Work; deduplikacja opiera się o `request_id`. API DTO może używać Pydantic, komenda aplikacyjna może być `@dataclass(frozen=True)`. Nie ustalono jeszcze finalnej postaci ścieżek HTTP ani schematów wszystkich DTO — poniższe są **kodami błędów aplikacyjnych**, a nie umową statusów HTTP:
 
-`NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATUS`, `INVALID_EXECUTION_MODE`, `TARGET_BLOCKED`, `VALIDATION_ERROR`, `CONFLICT`.
+`NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATUS`, `INVALID_EXECUTION_MODE`, `INVALID_END_REASON`, `TARGET_BLOCKED`, `VALIDATION_ERROR`, `CONFLICT`.
 
 ## Warunki, które muszą pozostać widoczne
 

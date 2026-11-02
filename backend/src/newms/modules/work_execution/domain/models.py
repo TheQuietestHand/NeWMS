@@ -89,7 +89,8 @@ class Operation:
     work_order_id: UUID
     operation_number: str
     status: ExecutionStatus = ExecutionStatus.WAITING
-    assigned_worker_id: UUID | None = None
+    # Plan przydziału; kto faktycznie pracował, wynika z WorkInterval.worker_id.
+    assigned_worker_ids: list[UUID] = field(default_factory=list)
     workstation_id: UUID | None = None
     created_at: datetime
     started_at: datetime | None = None
@@ -407,7 +408,7 @@ class WorkOrder:
         operation_id: UUID,
         operation_number: str,
         created_at: datetime,
-        assigned_worker_id: UUID | None = None,
+        assigned_worker_ids: Sequence[UUID] = (),
         workstation_id: UUID | None = None,
     ) -> Operation:
         """Dodanie nowej operacji do zlecenia w trybie OPERATIONS. Stan początkowy WAITING."""
@@ -429,7 +430,7 @@ class WorkOrder:
             id=operation_id,
             work_order_id=self.id,
             operation_number=operation_number,
-            assigned_worker_id=assigned_worker_id,
+            assigned_worker_ids=list(assigned_worker_ids),
             workstation_id=workstation_id,
             created_at=created_at,
         )
